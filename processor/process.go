@@ -1,12 +1,7 @@
 package processor
 
-import (
-	"github.com/IBM/sarama"
-	"io"
-)
-
 type Decoder[T any] interface {
-	Decode(reader io.Reader) (T, error)
+	Decode([]byte) (T, error)
 }
 
 type Processor[In, Out any] interface {
@@ -15,12 +10,4 @@ type Processor[In, Out any] interface {
 
 type Encoder[T any] interface {
 	Encode(T) ([]byte, error)
-}
-
-type Flow struct {
-	messageBus MessageBus
-}
-
-func flow(producerMessageBus MessageBus, consumerChannel chan []*sarama.ConsumerMessage) {
-
 }

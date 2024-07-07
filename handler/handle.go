@@ -2,39 +2,29 @@ package handler
 
 import (
 	"github.com/IBM/sarama"
-	"github.com/alitto/pond"
+	"github.com/aryehlev/kafka-middleman/processor"
+	"github.com/aryehlev/kafka-middleman/producer"
 	"log"
 )
 
-type Consumer struct {
-	ConsumerGroup string
+type Handler[T, S any] struct {
+	processor processor.Worker[T, S]
+	sink      producer.Worker
 
-	client sarama.ConsumerGroup
-
-	handler sarama.ConsumerGroupHandler
-
-	processingWorkers pond.WorkerPool
+	errorHandler func(*sarama.ConsumerMessage, error)
+	groupId      string
 }
 
-type Handler struct {
-	ready   chan bool
-	groupId string
-
-	buffer []*sarama.ConsumerMessage
-
-	messageSendingChannel chan []*sarama.ConsumerMessage
-}
-
-func (h Handler) Setup(session sarama.ConsumerGroupSession) error {
-	close(h.ready)
+func (h *Handler[_, _]) Setup(session sarama.ConsumerGroupSession) error {
+	h.sink = producer.Worker{}
 	return nil
 }
 
-func (h Handler) Cleanup(session sarama.ConsumerGroupSession) error {
-	return nil
+func (h *Handler[_, _]) Cleanup(session sarama.ConsumerGroupSession) error {
+	return producer.Worker.Close()
 }
 
-func (h Handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+func (h *Handler[_, _]) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for {
 		select {
 		case message, ok := <-claim.Messages():
@@ -42,11 +32,23 @@ func (h Handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.
 				log.Printf("message channel was closed")
 				return nil
 			}
+			err := h.processor.Run(message)
+			if err != nil {
+				h.errorHandler(message, err)
+				continue
+			}
 
-			h.messageSendingChannel <- []*sarama.ConsumerMessage{message}
+			restart, reset := h.sink.Run(message, h.groupId)
+			if reset {
+				session.ResetOffset(message.Topic, message.Partition, message.Offset, "")
+			}
+			if restart {
+				err := h.sink.Restart()
+				h.errorHandler(message, err)
+				continue
+			}
 		case <-session.Context().Done():
 			return nil
 		}
 	}
-
 }
