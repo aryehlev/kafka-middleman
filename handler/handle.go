@@ -1,27 +1,48 @@
 package handler
 
 import (
+	"log"
+
 	"github.com/IBM/sarama"
 	"github.com/aryehlev/kafka-middleman/processor"
 	"github.com/aryehlev/kafka-middleman/producer"
-	"log"
 )
 
 type Handler[T, S any] struct {
 	processor processor.Worker[T, S]
-	sink      producer.Worker
+	sink      *producer.Worker
 
-	errorHandler func(*sarama.ConsumerMessage, error)
-	groupId      string
+	groupId string
+
+	buffer     []*sarama.ProducerMessage
+	bufferSize int
+
+	destTopic    string
+	producerConf *sarama.Config
+	addrs        []string
+}
+
+func New[T, S any](groupId string, bufferSize int, destTopic string, producerConf *sarama.Config, addrs []string) Handler[T, S] {
+	return Handler[T, S]{
+		processor:    processor.Worker[T, S]{},
+		groupId:      groupId,
+		buffer:       make([]*sarama.ProducerMessage, 0, bufferSize),
+		bufferSize:   bufferSize,
+		destTopic:    destTopic,
+		producerConf: producerConf,
+		addrs:        addrs,
+	}
 }
 
 func (h *Handler[_, _]) Setup(session sarama.ConsumerGroupSession) error {
-	h.sink = producer.Worker{}
-	return nil
+	var err error
+	h.sink, err = producer.New(h.destTopic, h.producerConf, h.addrs)
+
+	return err
 }
 
 func (h *Handler[_, _]) Cleanup(session sarama.ConsumerGroupSession) error {
-	return producer.Worker.Close()
+	return h.sink.Close()
 }
 
 func (h *Handler[_, _]) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
@@ -32,21 +53,41 @@ func (h *Handler[_, _]) ConsumeClaim(session sarama.ConsumerGroupSession, claim 
 				log.Printf("message channel was closed")
 				return nil
 			}
-			err := h.processor.Run(message)
+
+			produceMsg, err := h.processor.Run(message)
 			if err != nil {
-				h.errorHandler(message, err)
+				session.MarkOffset(message.Topic, message.Partition, message.Offset+1, "")
 				continue
 			}
 
-			restart, reset := h.sink.Run(message, h.groupId)
-			if reset {
-				session.ResetOffset(message.Topic, message.Partition, message.Offset, "")
+			h.buffer = append(h.buffer, produceMsg)
+
+			if len(h.buffer) >= h.bufferSize {
+				lowestMessage := h.buffer[0]
+				offsets := make(map[string][]*sarama.PartitionOffsetMetadata)
+				offsets[message.Topic] = []*sarama.PartitionOffsetMetadata{
+					{
+						Partition: message.Partition,
+						Offset:    message.Offset + 1,
+					},
+				}
+				err := h.sink.Run(h.buffer, h.groupId, offsets)
+				switch err {
+				case producer.BadMessagesError:
+					session.ResetOffset(lowestMessage.Topic, lowestMessage.Partition, lowestMessage.Offset, "")
+				case producer.BadProducerError:
+					err := h.sink.Restart()
+					if err != nil {
+					}
+					err = h.sink.Run(h.buffer, h.groupId, nil)
+					if err != nil {
+					}
+				}
+
+				h.buffer = h.buffer[:0]
+
 			}
-			if restart {
-				err := h.sink.Restart()
-				h.errorHandler(message, err)
-				continue
-			}
+
 		case <-session.Context().Done():
 			return nil
 		}

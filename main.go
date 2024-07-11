@@ -27,6 +27,11 @@ func main() {
 	consumerConfig.Consumer.IsolationLevel = sarama.ReadCommitted
 	consumerConfig.Consumer.Offsets.AutoCommit.Enable = false
 	consumerConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
+	producerConfig := sarama.NewConfig()
+
+	producerConfig.Net.MaxOpenRequests = 1
+	producerConfig.Producer.RequiredAcks = sarama.WaitForAll
+	producerConfig.Producer.Idempotent = true
 
 	addresses := strings.Split(os.Getenv(addressesEnv), ",")
 	if len(addresses) < 1 {
