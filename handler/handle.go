@@ -20,17 +20,18 @@ type Handler[In, Out any] struct {
 	producerConf       sarama.Config
 	addrs              []string
 
-	allowedBadProcessingCount int
-	badProcessingCount        int
+	allowedRetries     int
+	badProcessingCount int
 }
 
 type Conf[In, Out any] struct {
-	GroupId      string
-	BufferSize   int
-	DestTopic    string
-	ProducerConf sarama.Config
-	Addrs        []string
-	Worker       processor.Worker[In, Out]
+	GroupId        string
+	BufferSize     int
+	DestTopic      string
+	ProducerConf   sarama.Config
+	Addrs          []string
+	Worker         processor.Worker[In, Out]
+	AllowedRetries int
 }
 
 func New[In, Out any](conf Conf[In, Out]) *Handler[In, Out] {
@@ -43,10 +44,12 @@ func New[In, Out any](conf Conf[In, Out]) *Handler[In, Out] {
 		producerConf: conf.ProducerConf,
 		addrs:        conf.Addrs,
 		sinks: producer.Pool{
-			New: func(topic string, partition int32) (*producer.Worker, error) {
+			New: func(topic string, partition int32) (*producer.Producer, error) {
 				return producer.New(conf.DestTopic, conf.ProducerConf, conf.Addrs, topic, partition)
 			},
+			NumRetries: conf.AllowedRetries,
 		},
+		allowedRetries: conf.AllowedRetries,
 	}
 }
 
@@ -55,7 +58,6 @@ func (h *Handler[_, _]) Setup(session sarama.ConsumerGroupSession) error {
 }
 
 func (h *Handler[_, _]) Cleanup(session sarama.ConsumerGroupSession) error {
-	h.sinks.Close(session.Claims())
 	return nil
 }
 
@@ -101,8 +103,8 @@ func (h *Handler[_, _]) processMessage(session sarama.ConsumerGroupSession, mess
 
 func (h *Handler[_, _]) flushBuffer(session sarama.ConsumerGroupSession, partition int32, message *sarama.ConsumerMessage) error {
 	offsets := getNextOffset(message)
-	sink := h.sinks.Get(message.Topic, partition)
-	if err := h.runSink(sink, session, offsets); err != nil {
+
+	if err := h.runSink(session, offsets, message); err != nil {
 		return err
 	}
 
@@ -124,25 +126,20 @@ func getNextOffset(message *sarama.ConsumerMessage) map[string][]*sarama.Partiti
 
 }
 
-func (h *Handler[_, _]) runSink(sink *producer.Worker, session sarama.ConsumerGroupSession, offsets map[string][]*sarama.PartitionOffsetMetadata) error {
-	err := sink.Run(h.buffer, h.groupId, offsets)
+func (h *Handler[_, _]) runSink(session sarama.ConsumerGroupSession, offsets map[string][]*sarama.PartitionOffsetMetadata, message *sarama.ConsumerMessage) error {
+	err := h.sinks.Send(message.Topic, message.Partition, h.buffer, h.groupId, offsets)
 	if err != nil {
 		switch err {
 		case producer.BadMessagesError: // processing was off try again.
 			h.badProcessingCount++
-			if h.badProcessingCount < h.allowedBadProcessingCount {
+			if h.badProcessingCount < h.allowedRetries {
 				session.ResetOffset(h.firstMessageBuffer.Topic, h.firstMessageBuffer.Partition, h.firstMessageBuffer.Offset, "")
 			} else {
 				return err
 			}
 		case producer.BadProducerError:
-			log.Printf("producer error, attempting restart: %v", err)
-			if restartErr := sink.Restart(); restartErr != nil {
-				return restartErr
-			}
-			if retryErr := sink.Run(h.buffer, h.groupId, nil); retryErr != nil {
-				return retryErr
-			}
+			log.Printf("producer error that wasnt handled: %v", err)
+			return err
 		default:
 			return err
 		}

@@ -1,18 +1,69 @@
 package producer
 
+import (
+	"errors"
+	"github.com/IBM/sarama"
+	"sync"
+)
+
 type topicPartition struct {
 	topic     string
 	partition int32
 }
 
 type Pool struct {
-	workers map[topicPartition]*Worker
-	New     func(topic string, partition int32) (*Worker, error)
+	workers    map[topicPartition][]*Producer
+	New        func(topic string, partition int32) (*Producer, error)
+	mutex      *sync.Mutex
+	NumRetries int
 }
 
-func (p *Pool) Get(topic string, partition int32) *Worker {
+func (p *Pool) Send(topic string, partition int32, messages []*sarama.ProducerMessage, groupId string,
+	offsets map[string][]*sarama.PartitionOffsetMetadata) error {
+	worker, err := p.get(topic, partition)
+	if err != nil {
+		return err
+	}
+
+	for i := 0; i < p.NumRetries && errors.Is(err, BadProducerError); i++ {
+		worker.Close()
+		worker, err := p.get(topic, partition)
+		if err != nil {
+			return err
+		}
+
+		err = worker.run(messages, groupId, offsets)
+	}
+
+	if !errors.Is(err, BadProducerError) {
+		p.put(topic, partition, worker)
+	} else {
+		worker.Close()
+	}
+
+	return err
+}
+
+func (p *Pool) get(topic string, partition int32) (*Producer, error) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
 	tp := topicPartition{topic: topic, partition: partition}
-	return p.workers[tp]
+	if producers, ok := p.workers[tp]; !ok || len(producers) == 0 {
+		return p.New(topic, partition)
+	}
+
+	index := len(p.workers[tp]) - 1
+	worker := p.workers[tp][index]
+	p.workers[tp] = p.workers[tp][:index]
+
+	return worker, nil
+}
+
+func (p *Pool) put(topic string, partition int32, worker *Producer) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	tp := topicPartition{topic: topic, partition: partition}
+	p.workers[tp] = append(p.workers[tp], worker)
 }
 
 // Input: map of topics to partitions.
@@ -28,26 +79,15 @@ func (p *Pool) Init(claims map[string][]int32) error {
 	return nil
 }
 
-func (p *Pool) Close(claims map[string][]int32) {
-	for topic, partitions := range claims {
-		for _, partition := range partitions {
-			p.close(topic, partition)
-		}
-	}
-}
-
 func (p *Pool) add(topic string, partition int32) error {
 	tp := topicPartition{topic: topic, partition: partition}
-	var err error
-	p.workers[tp], err = p.New(topic, partition)
-
-	return err
-}
-
-func (p *Pool) close(topic string, partition int32) {
-	tp := topicPartition{topic: topic, partition: partition}
-	worker, ok := p.workers[tp]
-	if ok {
-		worker.Close()
+	if _, ok := p.workers[tp]; !ok { //only add if dosnt exist.
+		worker, err := p.New(topic, partition)
+		if err != nil {
+			return err
+		}
+		p.workers[tp] = append(p.workers[tp], worker)
 	}
+
+	return nil
 }

@@ -14,7 +14,7 @@ var BadMessagesError = errors.New("bad Messages error")
 var BadProducerError = errors.New("bad producer error")
 var UnknownError = errors.New("unknown error")
 
-type Worker struct {
+type Producer struct {
 	destTopic string
 	producer  sarama.SyncProducer
 
@@ -25,13 +25,13 @@ type Worker struct {
 	numOfRestartTries int
 }
 
-func New(destTopic string, conf sarama.Config, addrs []string, srcTopic string, partition int32) (*Worker, error) {
+func New(destTopic string, conf sarama.Config, addrs []string, srcTopic string, partition int32) (*Producer, error) {
 	conf.Producer.Transaction.ID = fmt.Sprintf(transactionIdFormat, srcTopic, partition)
 	producer, err := sarama.NewSyncProducer(addrs, &conf)
 	if err != nil {
 		return nil, err
 	}
-	return &Worker{
+	return &Producer{
 		destTopic:         destTopic,
 		producer:          producer,
 		addrs:             addrs,
@@ -40,7 +40,7 @@ func New(destTopic string, conf sarama.Config, addrs []string, srcTopic string, 
 	}, nil
 }
 
-func (w *Worker) Run(messages []*sarama.ProducerMessage, groupId string, offsets map[string][]*sarama.PartitionOffsetMetadata) error {
+func (w *Producer) run(messages []*sarama.ProducerMessage, groupId string, offsets map[string][]*sarama.PartitionOffsetMetadata) error {
 	err := w.producer.BeginTxn()
 	if err != nil {
 		log.Println(err)
@@ -67,35 +67,11 @@ func (w *Worker) Run(messages []*sarama.ProducerMessage, groupId string, offsets
 	return nil
 }
 
-func (w *Worker) Close() error {
+func (w *Producer) Close() error {
 	return w.producer.Close()
 }
 
-func (w *Worker) Restart() error {
-	var err error
-	for i := 0; i < w.numOfRestartTries; i++ {
-		err = w.restart()
-		if err == nil {
-			return nil
-		}
-	}
-
-	return err
-}
-
-func (w *Worker) restart() error {
-	producer, err := sarama.NewSyncProducer(w.addrs, w.conf)
-	if err != nil {
-		log.Println(err)
-		return nil
-	}
-
-	w.producer = producer
-
-	return nil
-}
-
-func (w *Worker) Error(err error) error {
+func (w *Producer) Error(err error) error {
 	if w.producer.TxnStatus()&sarama.ProducerTxnFlagFatalError != 0 {
 		return BadProducerError
 	}

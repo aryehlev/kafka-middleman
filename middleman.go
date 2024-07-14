@@ -27,6 +27,7 @@ type Config[In, Out any] struct {
 	Process      processor.ProcessorFunc[In, Out]
 	Decoder      processor.Decoder[In]
 	Encoder      processor.Encoder[Out]
+	Retries      int
 }
 
 func New[In, Out any](groupId, sourceTopic, destTopic string, addr []string,
@@ -41,6 +42,7 @@ func New[In, Out any](groupId, sourceTopic, destTopic string, addr []string,
 		Process:      processingFunc,
 		Decoder:      serde.JsonParser[In]{},
 		Encoder:      serde.JsonEncoder[Out]{},
+		Retries:      3,
 	})
 }
 
@@ -62,12 +64,13 @@ func NewFromConfig[T, S any](conf Config[T, S]) (*MiddleMan[T, S], error) {
 		consumers = append(consumers, consumer)
 	}
 	handle := handler.New(handler.Conf[T, S]{
-		GroupId:      conf.GroupId,
-		BufferSize:   conf.BufferSize,
-		DestTopic:    conf.DestTopic,
-		ProducerConf: *producerConfig,
-		Addrs:        conf.Addr,
-		Worker:       processor.New(conf.Process, conf.Decoder, conf.Encoder),
+		GroupId:        conf.GroupId,
+		BufferSize:     conf.BufferSize,
+		DestTopic:      conf.DestTopic,
+		ProducerConf:   *producerConfig,
+		Addrs:          conf.Addr,
+		Worker:         processor.New(conf.Process, conf.Decoder, conf.Encoder),
+		AllowedRetries: conf.Retries,
 	})
 
 	return &MiddleMan[T, S]{
