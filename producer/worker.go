@@ -64,7 +64,7 @@ func (w *Worker) Run(messages []*sarama.ProducerMessage, groupId string, offsets
 }
 
 func (w *Worker) Close() error {
-	return nil
+	return w.producer.Close()
 }
 
 func (w *Worker) Restart() error {

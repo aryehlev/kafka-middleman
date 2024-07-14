@@ -12,8 +12,8 @@ type Worker[T, S any] struct {
 
 func New[T, S any](processor Processor[T, S],
 	decoder Decoder[T],
-	encoder Encoder[S]) *Worker[T, S] {
-	return &Worker[T, S]{
+	encoder Encoder[S]) Worker[T, S] {
+	return Worker[T, S]{
 		processor: processor,
 		decoder:   decoder,
 		encoder:   encoder,

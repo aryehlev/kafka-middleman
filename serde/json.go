@@ -15,6 +15,6 @@ func (jp JsonParser[T]) Decode(data []byte) (T, error) {
 type JsonEncoder[T any] struct {
 }
 
-func (jp JsonParser[T]) Encode(data T) ([]byte, error) {
+func (jp JsonEncoder[T]) Encode(data T) ([]byte, error) {
 	return json.Marshal(data)
 }
