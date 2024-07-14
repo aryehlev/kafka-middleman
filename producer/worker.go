@@ -2,10 +2,13 @@ package producer
 
 import (
 	"errors"
+	"fmt"
 	"log"
 
 	"github.com/IBM/sarama"
 )
+
+const transactionIdFormat = "midman_%s_%d"
 
 var BadMessagesError = errors.New("bad Messages error")
 var BadProducerError = errors.New("bad producer error")
@@ -22,8 +25,9 @@ type Worker struct {
 	numOfRestartTries int
 }
 
-func New(destTopic string, conf *sarama.Config, addrs []string) (*Worker, error) {
-	producer, err := sarama.NewSyncProducer(addrs, conf)
+func New(destTopic string, conf sarama.Config, addrs []string, srcTopic string, partition int32) (*Worker, error) {
+	conf.Producer.Transaction.ID = fmt.Sprintf(transactionIdFormat, srcTopic, partition)
+	producer, err := sarama.NewSyncProducer(addrs, &conf)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +35,7 @@ func New(destTopic string, conf *sarama.Config, addrs []string) (*Worker, error)
 		destTopic:         destTopic,
 		producer:          producer,
 		addrs:             addrs,
-		conf:              conf,
+		conf:              &conf,
 		numOfRestartTries: 3,
 	}, nil
 }

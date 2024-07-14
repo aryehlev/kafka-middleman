@@ -11,36 +11,36 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type MiddleMan[T, S any] struct {
-	handler   *handler.Handler[T, S]
+type MiddleMan[In, Out any] struct {
+	handler   *handler.Handler[In, Out]
 	topic     string
 	consumers []sarama.ConsumerGroup
 }
 
-type Config[T, S any] struct {
+type Config[In, Out any] struct {
 	NumConsumers int
 	Addr         []string
 	GroupId      string
 	BufferSize   int
 	SourceTopic  string
 	DestTopic    string
-	Process      processor.Processor[T, S]
-	Decoder      processor.Decoder[T]
-	Encoder      processor.Encoder[S]
+	Process      processor.ProcessorFunc[In, Out]
+	Decoder      processor.Decoder[In]
+	Encoder      processor.Encoder[Out]
 }
 
-func New[T, S any](groupId, sourceTopic, destTopic string, addr []string,
-	processingFunc func(T) (S, error)) (*MiddleMan[T, S], error) {
-	return NewFromConfig(Config[T, S]{
+func New[In, Out any](groupId, sourceTopic, destTopic string, addr []string,
+	processingFunc processor.ProcessorFunc[In, Out]) (*MiddleMan[In, Out], error) {
+	return NewFromConfig(Config[In, Out]{
 		NumConsumers: 1,
 		Addr:         addr,
 		GroupId:      groupId,
 		BufferSize:   10000,
 		SourceTopic:  sourceTopic,
 		DestTopic:    destTopic,
-		Process:      processor.ProcessorFromFunc(processingFunc),
-		Decoder:      serde.JsonParser[T]{},
-		Encoder:      serde.JsonEncoder[S]{},
+		Process:      processingFunc,
+		Decoder:      serde.JsonParser[In]{},
+		Encoder:      serde.JsonEncoder[Out]{},
 	})
 }
 
@@ -48,10 +48,8 @@ func NewFromConfig[T, S any](conf Config[T, S]) (*MiddleMan[T, S], error) {
 	consumerConfig := sarama.NewConfig()
 	consumerConfig.Consumer.IsolationLevel = sarama.ReadCommitted
 	consumerConfig.Consumer.Offsets.AutoCommit.Enable = false
-	consumerConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
 	producerConfig := sarama.NewConfig()
 
-	producerConfig.Net.MaxOpenRequests = 5
 	producerConfig.Producer.RequiredAcks = sarama.WaitForAll
 	producerConfig.Producer.Idempotent = true
 
@@ -67,7 +65,7 @@ func NewFromConfig[T, S any](conf Config[T, S]) (*MiddleMan[T, S], error) {
 		GroupId:      conf.GroupId,
 		BufferSize:   conf.BufferSize,
 		DestTopic:    conf.DestTopic,
-		ProducerConf: producerConfig,
+		ProducerConf: *producerConfig,
 		Addrs:        conf.Addr,
 		Worker:       processor.New(conf.Process, conf.Decoder, conf.Encoder),
 	})

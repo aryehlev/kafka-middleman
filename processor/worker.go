@@ -4,16 +4,18 @@ import (
 	"github.com/IBM/sarama"
 )
 
-type Worker[T, S any] struct {
-	processor Processor[T, S]
-	decoder   Decoder[T]
-	encoder   Encoder[S]
+type ProcessorFunc[In, Out any] func(In) (Out, error)
+
+type Worker[In, Out any] struct {
+	processor ProcessorFunc[In, Out]
+	decoder   Decoder[In]
+	encoder   Encoder[Out]
 }
 
-func New[T, S any](processor Processor[T, S],
-	decoder Decoder[T],
-	encoder Encoder[S]) Worker[T, S] {
-	return Worker[T, S]{
+func New[In, Out any](processor ProcessorFunc[In, Out],
+	decoder Decoder[In],
+	encoder Encoder[Out]) Worker[In, Out] {
+	return Worker[In, Out]{
 		processor: processor,
 		decoder:   decoder,
 		encoder:   encoder,
@@ -24,7 +26,7 @@ func (w *Worker[T, S]) Run(msg *sarama.ConsumerMessage) (*sarama.ProducerMessage
 	if err != nil {
 		return nil, err
 	}
-	middle, err := w.processor.Process(in)
+	middle, err := w.processor(in)
 	if err != nil {
 		return nil, err
 	}

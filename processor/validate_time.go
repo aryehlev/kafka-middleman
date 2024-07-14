@@ -13,12 +13,12 @@ const (
 	InValidStatus = "invalid"
 )
 
-type validator struct {
-	supportedTimeFormats []string
+type Validator struct {
+	SupportedTimeFormats []string
 }
 
-func (v *validator) Process(msg models.Message) (*models.Message, error) {
-	timeStamp, err := utils.ParseTimestampMultiFormats(msg.Timestamp, v.supportedTimeFormats)
+func (v *Validator) Process(msg models.Message) (*models.Message, error) {
+	timeStamp, err := utils.ParseTimestampMultiFormats(msg.Timestamp, v.SupportedTimeFormats)
 	if err != nil {
 		return nil, err
 	}
