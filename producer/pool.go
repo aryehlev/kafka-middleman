@@ -2,8 +2,9 @@ package producer
 
 import (
 	"errors"
-	"github.com/IBM/sarama"
 	"sync"
+
+	"github.com/IBM/sarama"
 )
 
 type topicPartition struct {
