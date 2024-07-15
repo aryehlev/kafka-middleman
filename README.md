@@ -62,6 +62,7 @@ For more advanced configurations, use `NewFromConfig` to adjust serializers and 
 ## future designs:
 - Out of order commmits(handled) with async consumer+processing workers.
 - Stay synchronous but smaller concurrent processing buffers.
+- change buffers and timeouts in sarama to optimize.
 
 
 
