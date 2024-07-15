@@ -19,6 +19,17 @@ type Pool struct {
 	NumRetries int
 }
 
+func NewPool(maxRetries int, addr []string, producerConf sarama.Config) *Pool {
+	return &Pool{
+		workers: map[topicPartition][]*Producer{},
+		New: func(topic string, partition int32) (*Producer, error) {
+			return New(producerConf, addr, topic, partition)
+		},
+		mutex:      new(sync.Mutex),
+		NumRetries: maxRetries,
+	}
+}
+
 func (p *Pool) Send(topic string, partition int32, messages []*sarama.ProducerMessage, groupId string,
 	offsets map[string][]*sarama.PartitionOffsetMetadata) error {
 	worker, err := p.get(topic, partition)
@@ -26,6 +37,7 @@ func (p *Pool) Send(topic string, partition int32, messages []*sarama.ProducerMe
 		return err
 	}
 
+	err = worker.run(messages, groupId, offsets)
 	for i := 0; i < p.NumRetries && errors.Is(err, BadProducerError); i++ {
 		worker.Close()
 		worker, err := p.get(topic, partition)
@@ -81,6 +93,9 @@ func (p *Pool) Init(claims map[string][]int32) error {
 }
 
 func (p *Pool) add(topic string, partition int32) error {
+	if p.workers == nil {
+		p.workers = map[topicPartition][]*Producer{}
+	}
 	tp := topicPartition{topic: topic, partition: partition}
 	if _, ok := p.workers[tp]; !ok { //only add if dosnt exist.
 		worker, err := p.New(topic, partition)

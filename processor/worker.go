@@ -21,7 +21,7 @@ func New[In, Out any](processor ProcessorFunc[In, Out],
 		encoder:   encoder,
 	}
 }
-func (w *Worker[T, S]) Run(msg *sarama.ConsumerMessage) (*sarama.ProducerMessage, error) {
+func (w *Worker[T, S]) Run(outTopic string, msg *sarama.ConsumerMessage) (*sarama.ProducerMessage, error) {
 	in, err := w.decoder.Decode(msg.Value)
 	if err != nil {
 		return nil, err
@@ -35,10 +35,8 @@ func (w *Worker[T, S]) Run(msg *sarama.ConsumerMessage) (*sarama.ProducerMessage
 		return nil, err
 	}
 
-	msg.Value = out
-
 	return &sarama.ProducerMessage{
-		Topic: msg.Topic,
+		Topic: outTopic,
 		Key:   sarama.ByteEncoder(msg.Key),
 		Value: sarama.ByteEncoder(out),
 	}, nil

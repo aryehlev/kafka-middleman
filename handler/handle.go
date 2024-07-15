@@ -2,6 +2,7 @@ package handler
 
 import (
 	"log"
+	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/aryehlev/kafka-middleman/processor"
@@ -9,24 +10,22 @@ import (
 )
 
 type Handler[In, Out any] struct {
-	processor          processor.Worker[In, Out]
-	sinks              producer.Pool
-	topic              string
-	groupId            string
-	buffer             []*sarama.ProducerMessage
-	firstMessageBuffer *sarama.ConsumerMessage
-	bufferSize         int
-	destTopic          string
-	producerConf       sarama.Config
-	addrs              []string
-
-	allowedRetries     int
-	badProcessingCount int
+	processor         processor.Worker[In, Out]
+	sinks             *producer.Pool
+	topic             string
+	groupId           string
+	bufferSize        int
+	maxProcessingTime time.Duration
+	destTopic         string
+	producerConf      sarama.Config
+	addrs             []string
+	allowedRetries    int
 }
 
 type Conf[In, Out any] struct {
 	GroupId        string
 	BufferSize     int
+	ProcessingTime time.Duration
 	DestTopic      string
 	ProducerConf   sarama.Config
 	Addrs          []string
@@ -36,20 +35,15 @@ type Conf[In, Out any] struct {
 
 func New[In, Out any](conf Conf[In, Out]) *Handler[In, Out] {
 	return &Handler[In, Out]{
-		processor:    conf.Worker,
-		groupId:      conf.GroupId,
-		buffer:       make([]*sarama.ProducerMessage, 0, conf.BufferSize),
-		bufferSize:   conf.BufferSize,
-		destTopic:    conf.DestTopic,
-		producerConf: conf.ProducerConf,
-		addrs:        conf.Addrs,
-		sinks: producer.Pool{
-			New: func(topic string, partition int32) (*producer.Producer, error) {
-				return producer.New(conf.DestTopic, conf.ProducerConf, conf.Addrs, topic, partition)
-			},
-			NumRetries: conf.AllowedRetries,
-		},
-		allowedRetries: conf.AllowedRetries,
+		processor:         conf.Worker,
+		groupId:           conf.GroupId,
+		bufferSize:        conf.BufferSize,
+		destTopic:         conf.DestTopic,
+		producerConf:      conf.ProducerConf,
+		addrs:             conf.Addrs,
+		sinks:             producer.NewPool(conf.AllowedRetries, conf.Addrs, conf.ProducerConf),
+		allowedRetries:    conf.AllowedRetries,
+		maxProcessingTime: conf.ProcessingTime,
 	}
 }
 
@@ -62,6 +56,8 @@ func (h *Handler[_, _]) Cleanup(session sarama.ConsumerGroupSession) error {
 }
 
 func (h *Handler[_, _]) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	state := NewConsumeState(h.bufferSize, session, claim)
+
 	for {
 		select {
 		case message, ok := <-claim.Messages():
@@ -69,8 +65,8 @@ func (h *Handler[_, _]) ConsumeClaim(session sarama.ConsumerGroupSession, claim 
 				log.Println("message channel was closed")
 				return nil
 			}
-
-			err := h.processMessage(session, message, claim.Partition())
+			state.currMessage = message
+			err := h.processMessage(state)
 			if err != nil {
 				return err
 			}
@@ -80,20 +76,21 @@ func (h *Handler[_, _]) ConsumeClaim(session sarama.ConsumerGroupSession, claim 
 	}
 }
 
-func (h *Handler[_, _]) processMessage(session sarama.ConsumerGroupSession, message *sarama.ConsumerMessage, partition int32) error {
-	if len(h.buffer) == 0 {
-		h.firstMessageBuffer = message
+func (h *Handler[_, _]) processMessage(state *consumeState) error {
+	if len(state.buffer) == 0 {
+		state.firstMessageBuffer = state.currMessage
 	}
 
-	produceMsg, err := h.processor.Run(message)
+	produceMsg, err := h.processor.Run(h.destTopic, state.currMessage)
 	if err != nil {
-		session.MarkOffset(message.Topic, message.Partition, message.Offset+1, "")
+		log.Println(err)
 		return nil
 	}
 
-	h.buffer = append(h.buffer, produceMsg)
-	if len(h.buffer) >= h.bufferSize {
-		if err := h.flushBuffer(session, partition, message); err != nil {
+	state.buffer = append(state.buffer, produceMsg)
+
+	if state.shouldSendBuffer(h.bufferSize, h.maxProcessingTime) {
+		if err := h.flushBuffer(state); err != nil {
 			return err
 		}
 	}
@@ -101,16 +98,14 @@ func (h *Handler[_, _]) processMessage(session sarama.ConsumerGroupSession, mess
 	return nil
 }
 
-func (h *Handler[_, _]) flushBuffer(session sarama.ConsumerGroupSession, partition int32, message *sarama.ConsumerMessage) error {
-	offsets := getNextOffset(message)
+func (h *Handler[_, _]) flushBuffer(state *consumeState) error {
+	offsets := getNextOffset(state.currMessage)
 
-	if err := h.runSink(session, offsets, message); err != nil {
+	if err := h.runSink(state, offsets); err != nil {
 		return err
 	}
 
-	h.badProcessingCount = 0
-	h.buffer = h.buffer[:0]
-
+	state.reset()
 	return nil
 }
 
@@ -123,22 +118,21 @@ func getNextOffset(message *sarama.ConsumerMessage) map[string][]*sarama.Partiti
 			},
 		},
 	}
-
 }
 
-func (h *Handler[_, _]) runSink(session sarama.ConsumerGroupSession, offsets map[string][]*sarama.PartitionOffsetMetadata, message *sarama.ConsumerMessage) error {
-	err := h.sinks.Send(message.Topic, message.Partition, h.buffer, h.groupId, offsets)
+func (h *Handler[_, _]) runSink(state *consumeState, offsets map[string][]*sarama.PartitionOffsetMetadata) error {
+	err := h.sinks.Send(state.currMessage.Topic, state.currMessage.Partition, state.buffer, h.groupId, offsets)
 	if err != nil {
 		switch err {
 		case producer.BadMessagesError: // processing was off try again.
-			h.badProcessingCount++
-			if h.badProcessingCount < h.allowedRetries {
-				session.ResetOffset(h.firstMessageBuffer.Topic, h.firstMessageBuffer.Partition, h.firstMessageBuffer.Offset, "")
+			state.badProcessingCount++
+			if state.badProcessingCount < h.allowedRetries {
+				state.session.ResetOffset(state.firstMessageBuffer.Topic, state.firstMessageBuffer.Partition, state.firstMessageBuffer.Offset, "")
 			} else {
 				return err
 			}
 		case producer.BadProducerError:
-			log.Printf("producer error that wasnt handled: %v", err)
+			log.Printf("producer error that wasn't handled: %v", err)
 			return err
 		default:
 			return err

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"errors"
-
 	"github.com/IBM/sarama"
 	"github.com/aryehlev/kafka-middleman/handler"
 	"github.com/aryehlev/kafka-middleman/processor"
 	"github.com/aryehlev/kafka-middleman/serde"
 	"golang.org/x/sync/errgroup"
+	"log"
+	"os"
+	"time"
 )
 
 type MiddleMan[In, Out any] struct {
@@ -28,6 +30,7 @@ type Config[In, Out any] struct {
 	Decoder      processor.Decoder[In]
 	Encoder      processor.Encoder[Out]
 	Retries      int
+	ProcessTime  time.Duration
 }
 
 func New[In, Out any](groupId, sourceTopic, destTopic string, addr []string,
@@ -36,22 +39,28 @@ func New[In, Out any](groupId, sourceTopic, destTopic string, addr []string,
 		NumConsumers: 1,
 		Addr:         addr,
 		GroupId:      groupId,
-		BufferSize:   10000,
+		BufferSize:   1000,
 		SourceTopic:  sourceTopic,
 		DestTopic:    destTopic,
 		Process:      processingFunc,
 		Decoder:      serde.JsonParser[In]{},
 		Encoder:      serde.JsonEncoder[Out]{},
 		Retries:      3,
+		ProcessTime:  time.Second,
 	})
 }
 
 func NewFromConfig[T, S any](conf Config[T, S]) (*MiddleMan[T, S], error) {
-	consumerConfig := sarama.NewConfig()
-	consumerConfig.Consumer.IsolationLevel = sarama.ReadCommitted
-	consumerConfig.Consumer.Offsets.AutoCommit.Enable = false
-	producerConfig := sarama.NewConfig()
+	sarama.Logger = log.New(os.Stdout, "middleman ", log.LstdFlags)
 
+	consumerConfig := sarama.NewConfig()
+	consumerConfig.Consumer.Offsets.AutoCommit.Enable = false
+	consumerConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
+
+	producerConfig := sarama.NewConfig()
+	producerConfig.Producer.Return.Successes = true
+	producerConfig.Producer.Return.Errors = true
+	producerConfig.Net.MaxOpenRequests = 1
 	producerConfig.Producer.RequiredAcks = sarama.WaitForAll
 	producerConfig.Producer.Idempotent = true
 
@@ -71,6 +80,7 @@ func NewFromConfig[T, S any](conf Config[T, S]) (*MiddleMan[T, S], error) {
 		Addrs:          conf.Addr,
 		Worker:         processor.New(conf.Process, conf.Decoder, conf.Encoder),
 		AllowedRetries: conf.Retries,
+		ProcessingTime: conf.ProcessTime,
 	})
 
 	return &MiddleMan[T, S]{
