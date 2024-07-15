@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
-	"github.com/aryehlev/kafka-middleman/models"
 	"github.com/aryehlev/kafka-middleman/processor"
 	"github.com/bitfield/script"
 )
@@ -63,7 +62,7 @@ func TestKafkaProcessing(t *testing.T) {
 		}
 	}()
 
-	messages := []models.Message{
+	messages := []processor.Message{
 		{ID: fmt.Sprintf("%d", rand.Int()), Timestamp: time.Now().AddDate(0, 0, -3).Format(time.RFC3339), Data: "OldData1"},
 		{ID: fmt.Sprintf("%d", rand.Int()), Timestamp: time.Now().AddDate(0, 0, -4).Format(time.RFC3339), Data: "OldData2"},
 		{ID: fmt.Sprintf("%d", rand.Int()), Timestamp: time.Now().Format(time.RFC3339), Data: "This is a long data string"},
@@ -103,7 +102,7 @@ func createTopic(admin sarama.ClusterAdmin, topic string, numPartitions int32, r
 	return nil
 }
 
-func produceMessages(t *testing.T, producer sarama.SyncProducer, messages []models.Message) {
+func produceMessages(t *testing.T, producer sarama.SyncProducer, messages []processor.Message) {
 	for i := 0; i < numOfIterations; i++ {
 		for _, message := range messages {
 			msgValue := fmt.Sprintf(`{"id":"%s","timestamp":"%s","data":"%s"}`, message.ID, message.Timestamp, message.Data)

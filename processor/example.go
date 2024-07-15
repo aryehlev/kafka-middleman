@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aryehlev/kafka-middleman/models"
 	"github.com/aryehlev/kafka-middleman/utils"
 )
 
@@ -13,11 +12,18 @@ const (
 	InValidStatus = "invalid"
 )
 
+type Message struct {
+	ID        string `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Data      string `json:"data"`
+	Status    string `json:"status"`
+}
+
 type Validator struct {
 	SupportedTimeFormats []string
 }
 
-func (v *Validator) Process(msg models.Message) (*models.Message, error) {
+func (v *Validator) Process(msg Message) (*Message, error) {
 	timeStamp, err := utils.ParseTimestampMultiFormats(msg.Timestamp, v.SupportedTimeFormats)
 	if err != nil {
 		return nil, err
