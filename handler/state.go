@@ -2,7 +2,6 @@ package handler
 
 import (
 	"github.com/IBM/sarama"
-	"time"
 )
 
 type consumeState struct {
@@ -12,10 +11,9 @@ type consumeState struct {
 	currMessage        *sarama.ConsumerMessage
 	session            sarama.ConsumerGroupSession
 	claim              sarama.ConsumerGroupClaim
-	lastSendTime       time.Time
 }
 
-func NewConsumeState(bufferSize int, session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) *consumeState {
+func newConsumeState(bufferSize int, session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) *consumeState {
 	return &consumeState{
 		badProcessingCount: 0,
 		buffer:             make([]*sarama.ProducerMessage, 0, bufferSize),
@@ -24,13 +22,12 @@ func NewConsumeState(bufferSize int, session sarama.ConsumerGroupSession, claim 
 	}
 }
 
-func (cs *consumeState) shouldSendBuffer(bufferSize int, maxBufferTime time.Duration) bool {
+func (cs *consumeState) shouldSendBuffer(bufferSize int) bool {
 	return len(cs.buffer) >= bufferSize ||
-		time.Since(cs.lastSendTime) >= maxBufferTime
+		cs.claim.HighWaterMarkOffset()-cs.currMessage.Offset < int64(bufferSize/10) //towards when no more messages wierd.
 }
 
 func (cs *consumeState) reset() {
 	cs.badProcessingCount = 0
 	cs.buffer = cs.buffer[:0]
-	cs.lastSendTime = time.Now()
 }

@@ -10,7 +10,6 @@ import (
 	"golang.org/x/sync/errgroup"
 	"log"
 	"os"
-	"time"
 )
 
 type MiddleMan[In, Out any] struct {
@@ -30,7 +29,6 @@ type Config[In, Out any] struct {
 	Decoder      processor.Decoder[In]
 	Encoder      processor.Encoder[Out]
 	Retries      int
-	ProcessTime  time.Duration
 }
 
 func New[In, Out any](groupId, sourceTopic, destTopic string, addr []string,
@@ -46,7 +44,6 @@ func New[In, Out any](groupId, sourceTopic, destTopic string, addr []string,
 		Decoder:      serde.JsonParser[In]{},
 		Encoder:      serde.JsonEncoder[Out]{},
 		Retries:      3,
-		ProcessTime:  time.Second,
 	})
 }
 
@@ -80,7 +77,6 @@ func NewFromConfig[T, S any](conf Config[T, S]) (*MiddleMan[T, S], error) {
 		Addrs:          conf.Addr,
 		Worker:         processor.New(conf.Process, conf.Decoder, conf.Encoder),
 		AllowedRetries: conf.Retries,
-		ProcessingTime: conf.ProcessTime,
 	})
 
 	return &MiddleMan[T, S]{
